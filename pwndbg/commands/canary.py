@@ -25,7 +25,13 @@ def canary_value():
     # masking canary value as canaries on the stack has last byte = 0
     global_canary &= pwndbg.aglib.arch.ptrmask ^ 0xFF
 
-    return global_canary, at_random
+    try:
+        fs_base = pwndbg.glibc.regs.fsbase
+        tls_canary_addr = fs_base + 0x28
+    except Exception:
+        tls_canary_addr = None
+
+    return global_canary, at_random, tls_canary_addr
 
 
 parser = argparse.ArgumentParser(description="Print out the current stack canary.")
@@ -46,10 +52,24 @@ def canary(all) -> None:
         print(message.error("Couldn't find AT_RANDOM - can't display canary."))
         return
 
-    print(
-        message.notice("AT_RANDOM = %#x # points to (not masked) global canary value" % at_random)
-    )
-    print(message.notice("Canary    = 0x%x (may be incorrect on != glibc)" % global_canary))
+    print(message.notice("Canary info:"))
+    print(message.notice(f"  AT_RANDOM (auxv)    = {at_random:#x}  # Source of initial randomness"))
+    
+    if tls_canary_addr:
+        print(message.notice(f"  TLS storage         = {tls_canary_addr:#x}  # Actual location in thread-local storage"))
+        print(message.notice(f"  Canary value        = 0x{global_canary:x}    (first byte nulled)"))
+        
+        # Verify TLS matches derived canary
+        try:
+            stored_canary = pwndbg.memory.u64(tls_canary_addr)
+            if stored_canary == global_canary:
+                print(message.success("  Verification        : TLS value matches derived canary."))
+            else:
+                print(message.warn(f"  Verification        : TLS value (0x{stored_canary:x}) does NOT match derived canary!"))
+        except Exception as e:
+            print(message.warn(f"  Verification        : Could not read TLS (error: {e})"))
+    else:
+        print(message.warn("  TLS storage         : Could not determine (missing fsbase?)"))
 
     found_canaries = False
     global_canary_packed = pwndbg.aglib.arch.pack(global_canary)
